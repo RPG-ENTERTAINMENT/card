@@ -175,6 +175,13 @@ textarea.locked,input.locked{background:#f0f0ec;color:#555;cursor:not-allowed}
 .page-head>span{min-width:90px}
 .page-overlay .library{border-top:none;padding-top:20px}
 .lib-actions{display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap}
+.app-credit{
+  text-align:center;padding:26px 20px 40px;border-top:1px solid var(--line);
+  background:var(--panel);font-size:12.5px;color:var(--sub);line-height:1.9;
+}
+.app-credit strong{color:var(--ink);font-weight:700}
+.app-credit a{color:var(--accent);text-decoration:none;word-break:break-all}
+.app-credit a:hover{text-decoration:underline}
 .lib-list{display:flex;flex-direction:column;gap:8px;max-width:820px}
 .lib-item{
   display:flex;align-items:center;gap:14px;
@@ -329,8 +336,8 @@ textarea.locked,input.locked{background:#f0f0ec;color:#555;cursor:not-allowed}
     <div class="group">
       <h2>所属</h2>
       <label for="f_belong">所属・連絡先（変更不可）</label>
-      <textarea id="f_belong" rows="2" data-bind readonly class="locked"></textarea>
-      <p class="hint">この欄は固定です（編集できません）。</p>
+      <textarea id="f_belong" rows="2" data-bind></textarea>
+      <p class="hint">所属・連絡先を編集できます（初期値はサンプルです）。</p>
     </div>
 
     <div class="group">
@@ -414,6 +421,10 @@ textarea.locked,input.locked{background:#f0f0ec;color:#555;cursor:not-allowed}
       <button id="btnImportJson">ファイル読み込み</button>
       <input type="file" id="jsonFile" accept=".json" style="display:none">
       <button id="btnAdmin">運営モード</button>
+      <button id="btnDeploy" style="display:none">サイトに反映</button>
+      <button id="btnToken" style="display:none">トークン設定</button>
+      <input type="file" id="deployFile" accept=".html,text/html" style="display:none">
+
     </div>
     <p class="hint" id="syncStatus"></p>
     <p class="hint" id="adminStatus" style="color:#a33"></p>
@@ -451,6 +462,12 @@ textarea.locked,input.locked{background:#f0f0ec;color:#555;cursor:not-allowed}
     <p class="hint">サーバー起動中はボタン1つで直接送信されます（Gmail経由・送信済みにも記録）。サーバーがない環境では自動で共有シート／メールアプリ起動に切り替わります。</p>
   </div>
 </section>
+
+<footer class="app-credit">
+  このWebアプリを制作したのは
+  <strong>株式会社RPGエンターテイメント</strong><br>
+  <a href="https://www.rpgtokyo.com/" target="_blank" rel="noopener">https://www.rpgtokyo.com/</a>
+</footer>
 
 <div id="toast" role="status"></div>
 
@@ -594,6 +611,18 @@ function collectValues(){
 }
 
 /* ============ render ============ */
+/* 生年月日から年齢を計算（年月日がすべて数値のときのみ） */
+function calcAge(by, bm, bd){
+  const y = parseInt(by,10), m = parseInt(bm,10), d = parseInt(bd,10);
+  if(!y || !m || !d || y < 1900 || m < 1 || m > 12 || d < 1 || d > 31) return null;
+  const today = new Date();
+  let age = today.getFullYear() - y;
+  const mo = today.getMonth() + 1, da = today.getDate();
+  if(mo < m || (mo === m && da < d)) age--;   // 誕生日前なら1引く
+  if(age < 0 || age > 120) return null;
+  return age;
+}
+
 /* 役職（肩書き）を必ず1行に収める：はみ出すなら文字を縮小 */
 function fitCategory(){
   const el = $('p_category');
@@ -621,7 +650,12 @@ function render(){
   const g = $('p_group_in').value.trim(); if(g) prof.push(g);
   const bp = $('p_birth').value.trim(); if(bp) prof.push('出身地 ' + bp);
   const by = $('p_by').value.trim(), bm = $('p_bm').value.trim(), bd = $('p_bd').value.trim();
-  if(by || bm || bd) prof.push('生年月日 ' + (by?by+'年':'') + (bm?bm+'月':'') + (bd?bd+'日':''));
+  if(by || bm || bd){
+    let line = '生年月日 ' + (by?by+'年':'') + (bm?bm+'月':'') + (bd?bd+'日':'');
+    const age = calcAge(by, bm, bd);
+    if(age !== null) line += '（' + age + '歳）';
+    prof.push(line);
+  }
   const ht = $('p_height').value.trim(); if(ht) prof.push('身長 ' + ht + 'cm');
   const b = $('p_b').value.trim(), w = $('p_w').value.trim(), h = $('p_h').value.trim();
   if(b || w || h) prof.push('スリーサイズ B:' + b + 'cm/W：' + w + 'cm/H：' + h + 'cm');
@@ -929,6 +963,9 @@ function updateAdminUI(){
   b.classList.toggle('primary', adminMode);
   const st = $('adminStatus');
   if(st) st.textContent = adminMode ? '運営モード中：書類を削除できます。' : '';
+  // 反映ボタンは運営モードのときだけ表示
+  $('btnDeploy').style.display = adminMode ? '' : 'none';
+  $('btnToken').style.display = adminMode ? '' : 'none';
 }
 $('btnAdmin').addEventListener('click', async () => {
   if(adminMode){
@@ -944,6 +981,84 @@ $('btnAdmin').addEventListener('click', async () => {
   updateAdminUI();
   renderLibrary(await getIndex());
 });
+
+/* ============ サイトに反映（運営モード専用） ============ */
+const GH_OWNER = 'RPG-ENTERTAINMENT';
+const GH_REPO  = 'rpg-site';
+const GH_PATH  = 'rpg/card/index.html';
+const GH_BRANCH = 'main';
+const GH_TOKEN_KEY = 'gh-token-v1';   // 端末内（localStorage）のみに保存
+
+function getGhToken(){ try{ return localStorage.getItem(GH_TOKEN_KEY) || ''; }catch(e){ return ''; } }
+function setGhToken(t){ try{ localStorage.setItem(GH_TOKEN_KEY, t); }catch(e){} }
+
+function utf8ToBase64(str){
+  const bytes = new TextEncoder().encode(str);
+  let bin = '';
+  bytes.forEach(b => bin += String.fromCharCode(b));
+  return btoa(bin);
+}
+
+$('btnToken').addEventListener('click', () => {
+  const cur = getGhToken();
+  const t = prompt('GitHubのアクセストークンを貼り付けてください\n（この端末だけに保存。最初の1回だけでOK）', cur);
+  if(t === null) return;
+  setGhToken(t.trim());
+  toast(t.trim() ? 'トークンを保存しました' : 'トークンを消去しました');
+});
+
+$('btnDeploy').addEventListener('click', () => {
+  if(!getGhToken()){
+    toast('先に「トークン設定」でトークンを登録してください');
+    return;
+  }
+  $('deployFile').click();   // 反映する最新のindex.htmlを選ぶ
+});
+
+$('deployFile').addEventListener('change', e => {
+  const file = e.target.files[0];
+  e.target.value = '';
+  if(!file) return;
+  const reader = new FileReader();
+  reader.onload = () => deployToGitHub(reader.result);
+  reader.readAsText(file);
+});
+
+async function deployToGitHub(htmlText){
+  const token = getGhToken();
+  const base = 'https://api.github.com/repos/' + GH_OWNER + '/' + GH_REPO + '/contents/' + GH_PATH;
+  const headers = { 'Authorization': 'Bearer ' + token, 'Accept': 'application/vnd.github+json' };
+  const btn = $('btnDeploy');
+  btn.disabled = true; btn.textContent = '反映中…';
+  try{
+    let sha = undefined;
+    const getResp = await fetch(base + '?ref=' + GH_BRANCH, { headers });
+    if(getResp.status === 200){ sha = (await getResp.json()).sha; }
+    else if(getResp.status === 401){ toast('トークンが無効です。設定し直してください'); return; }
+    else if(getResp.status === 404){ /* 新規作成 */ }
+
+    const putResp = await fetch(base, {
+      method: 'PUT',
+      headers,
+      body: JSON.stringify({
+        message: 'update card ' + new Date().toISOString(),
+        content: utf8ToBase64(htmlText),
+        branch: GH_BRANCH,
+        ...(sha ? { sha } : {})
+      })
+    });
+    if(putResp.ok){
+      toast('サイトに反映しました（1〜2分で公開）');
+    }else{
+      const err = await putResp.json().catch(()=>({}));
+      toast('反映に失敗：' + (err.message || putResp.status));
+    }
+  }catch(e){
+    toast('通信に失敗しました');
+  }finally{
+    btn.disabled = false; btn.textContent = 'サイトに反映';
+  }
+}
 
 // 「参考例を見る」ボタン：星乃ひかりのサンプルを入力
 $('btnExample').addEventListener('click', () => {
@@ -1223,8 +1338,9 @@ window.addEventListener('resize', fitPreview);
 
 /* ============ init ============ */
 // 所属は常に固定値に保つ（読み込み後も上書き）
-const FIXED_BELONG = '所属RPGエンターテイメント　連絡先rpgentertainment2014@gmail.com';
-function lockBelong(){ $('f_belong').value = FIXED_BELONG; }
+const SAMPLE_BELONG = '所属RPGエンターテイメント　連絡先rpgentertainment2014@gmail.com';
+// 所属は編集可能。空のときだけサンプルを入れる（入力済みの内容は保持）
+function lockBelong(){ if(!$('f_belong').value.trim()) $('f_belong').value = SAMPLE_BELONG; }
 
 FIELD_IDS.forEach(id => $(id).addEventListener('input', render));
 
@@ -1237,7 +1353,7 @@ function applyBlankTemplate(){
     else if($(id).tagName === 'SELECT') v[id] = $(id).options[0].value;
     else v[id] = '';
   });
-  v.f_belong = FIXED_BELONG; // 所属は固定
+  v.f_belong = SAMPLE_BELONG; // 初期値はサンプル（編集可）
   applyValues(v);
   photos = {main:null, full:null};
 }
